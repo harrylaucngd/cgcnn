@@ -13,49 +13,93 @@ import torch.optim as optim
 from sklearn import metrics
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import MultiStepLR
-from sklearn.metrics import r2_score
-from sklearn.model_selection import KFold
-import matplotlib.pyplot as plt
 
-from cgcnn.data_modify import CIFData
-from cgcnn.data_modify import collate_pool, get_train_val_test_loader
+from cgcnn.data import CIFData
+from cgcnn.data import collate_pool, get_train_val_test_loader
 from cgcnn.model import CrystalGraphConvNet
 
-# 修改了本来的命令行输入
-# 按照要求，是将原始数据集8:2分成训练集与测试集，再在训练集里进行五折交叉验证
+import optuna
 
+def objective(trial):
+    # 设置需要优化的超参数
+    lr = trial.suggest_loguniform('lr', 1e-5, 1e-1)
+    batch_size = trial.suggest_categorical('batch_size', [128, 256, 512])
+    momentum = trial.suggest_uniform('momentum', 0.5, 0.99)
+    weight_decay = trial.suggest_loguniform('weight_decay', 1e-6, 1e-2)
+    
+    # 更新 args 中的超参数
+    args.lr = lr
+    args.batch_size = batch_size
+    args.momentum = momentum
+    args.weight_decay = weight_decay
 
-class Args:
-    def __init__(self):
-        self.data_options = ['DACs-data-pretrain']
-        self.task = 'regression'
-        self.disable_cuda = False
-        self.workers = 0
-        self.epochs = 300
-        self.start_epoch = 0
-        self.batch_size = 512
-        self.lr = 0.0010098097217444582
-        self.lr_milestones = [100]
-        self.momentum = 0.6907078649506996
-        self.weight_decay = 0.00012726161062048998
-        self.print_freq = 100
-        self.resume = ''
-        self.train_ratio = 0.8
-        self.train_size = None
-        self.val_ratio = 0
-        self.val_size = None
-        self.test_ratio = 0.2
-        self.test_size = None
-        self.optim = 'SGD'
-        self.atom_fea_len = 64
-        self.h_fea_len = 128
-        self.n_conv = 4
-        self.n_h = 1   # 池化后的隐藏层数量
-        self.cuda = torch.cuda.is_available()
-        self.is_5cv = True
+    # 调用 main 函数进行训练和验证
+    mae_error = main(trial)
+    
+    return mae_error
 
+parser = argparse.ArgumentParser(description='Crystal Graph Convolutional Neural Networks')
+parser.add_argument('data_options', metavar='OPTIONS', nargs='+',
+                    help='dataset options, started with the path to root dir, '
+                         'then other options')
+parser.add_argument('--task', choices=['regression', 'classification'],
+                    default='regression', help='complete a regression or '
+                                                   'classification task (default: regression)')
+parser.add_argument('--disable-cuda', action='store_true',
+                    help='Disable CUDA')
+parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
+                    help='number of data loading workers (default: 0)')
+parser.add_argument('--epochs', default=300, type=int, metavar='N',
+                    help='number of total epochs to run (default: 30)')
+parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
+                    help='manual epoch number (useful on restarts)')
+parser.add_argument('-b', '--batch-size', default=256, type=int,
+                    metavar='N', help='mini-batch size (default: 256)')
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
+                    metavar='LR', help='initial learning rate (default: '
+                                       '0.01)')
+parser.add_argument('--lr-milestones', default=[100], nargs='+', type=int,
+                    metavar='N', help='milestones for scheduler (default: '
+                                      '[100])')
+parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+                    help='momentum')
+parser.add_argument('--weight-decay', '--wd', default=0, type=float,
+                    metavar='W', help='weight decay (default: 0)')
+parser.add_argument('--print-freq', '-p', default=10, type=int,
+                    metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                    help='path to latest checkpoint (default: none)')
+train_group = parser.add_mutually_exclusive_group()
+train_group.add_argument('--train-ratio', default=None, type=float, metavar='N',
+                    help='number of training data to be loaded (default none)')
+train_group.add_argument('--train-size', default=None, type=int, metavar='N',
+                         help='number of training data to be loaded (default none)')
+valid_group = parser.add_mutually_exclusive_group()
+valid_group.add_argument('--val-ratio', default=0.1, type=float, metavar='N',
+                    help='percentage of validation data to be loaded (default '
+                         '0.1)')
+valid_group.add_argument('--val-size', default=None, type=int, metavar='N',
+                         help='number of validation data to be loaded (default '
+                              '1000)')
+test_group = parser.add_mutually_exclusive_group()
+test_group.add_argument('--test-ratio', default=0.1, type=float, metavar='N',
+                    help='percentage of test data to be loaded (default 0.1)')
+test_group.add_argument('--test-size', default=None, type=int, metavar='N',
+                        help='number of test data to be loaded (default 1000)')
 
-args = Args()
+parser.add_argument('--optim', default='SGD', type=str, metavar='SGD',
+                    help='choose an optimizer, SGD or Adam, (default: SGD)')
+parser.add_argument('--atom-fea-len', default=64, type=int, metavar='N',
+                    help='number of hidden atom features in conv layers')
+parser.add_argument('--h-fea-len', default=128, type=int, metavar='N',
+                    help='number of hidden features after pooling')
+parser.add_argument('--n-conv', default=3, type=int, metavar='N',
+                    help='number of conv layers')
+parser.add_argument('--n-h', default=1, type=int, metavar='N',
+                    help='number of hidden layers after pooling')
+
+args = parser.parse_args(sys.argv[1:])
+
 args.cuda = not args.disable_cuda and torch.cuda.is_available()
 
 if args.task == 'regression':
@@ -64,13 +108,13 @@ else:
     best_mae_error = 0.
 
 
-def main():
+def main(trial=None):
     global args, best_mae_error
 
     # load data
     dataset = CIFData(*args.data_options)
     collate_fn = collate_pool
-    train_loaders, val_loaders, test_loader = get_train_val_test_loader(
+    train_loader, val_loader, test_loader = get_train_val_test_loader(
         dataset=dataset,
         collate_fn=collate_fn,
         batch_size=args.batch_size,
@@ -82,9 +126,7 @@ def main():
         train_size=args.train_size,
         val_size=args.val_size,
         test_size=args.test_size,
-        return_test=True,
-        is_5cv=args.is_5cv
-    )
+        return_test=True)
 
     # obtain target value normalizer
     if args.task == 'classification':
@@ -101,121 +143,89 @@ def main():
         _, sample_target, _ = collate_pool(sample_data_list)
         normalizer = Normalizer(sample_target)
 
-    all_train_losses = []
-    all_val_losses = []
-    test_maes = []
-    test_r2s = []
+    # build model
+    structures, _, _ = dataset[0]
+    orig_atom_fea_len = structures[0].shape[-1]
+    nbr_fea_len = structures[1].shape[-1]
+    model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
+                                atom_fea_len=args.atom_fea_len,
+                                n_conv=args.n_conv,
+                                h_fea_len=args.h_fea_len,
+                                n_h=args.n_h,
+                                classification=True if args.task ==
+                                                       'classification' else False)
+    if args.cuda:
+        model.cuda()
 
-    # 增加5折交叉验证，准确性存疑，具体交叉验证的数据划分在data.py中存在改动
-    for fold in range(5):
-        print('-------------Fold {}---------------'.format(fold+1))
+    # define loss func and optimizer
+    if args.task == 'classification':
+        criterion = nn.NLLLoss()
+    else:
+        criterion = nn.MSELoss()
+    if args.optim == 'SGD':
+        optimizer = optim.SGD(model.parameters(), args.lr,
+                              momentum=args.momentum,
+                              weight_decay=args.weight_decay)
+    elif args.optim == 'Adam':
+        optimizer = optim.Adam(model.parameters(), args.lr,
+                               weight_decay=args.weight_decay)
+    else:
+        raise NameError('Only SGD or Adam is allowed as --optim')
 
-        # build model
-        structures, _, _ = dataset[0]
-        orig_atom_fea_len = structures[0].shape[-1]
-        nbr_fea_len = structures[1].shape[-1]
-        model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
-                                    atom_fea_len=args.atom_fea_len,
-                                    n_conv=args.n_conv,
-                                    h_fea_len=args.h_fea_len,
-                                    n_h=args.n_h,
-                                    classification=True if args.task ==
-                                                           'classification' else False)
-        if args.cuda:
-            model.cuda()
-
-        # define loss func and optimizer
-        if args.task == 'classification':
-            criterion = nn.NLLLoss()
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            args.start_epoch = checkpoint['epoch']
+            best_mae_error = checkpoint['best_mae_error']
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            normalizer.load_state_dict(checkpoint['normalizer'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.resume, checkpoint['epoch']))
         else:
-            criterion = nn.MSELoss()
-        if args.optim == 'SGD':
-            optimizer = optim.SGD(model.parameters(), args.lr,
-                                  momentum=args.momentum,
-                                  weight_decay=args.weight_decay)
-        elif args.optim == 'Adam':
-            optimizer = optim.Adam(model.parameters(), args.lr,
-                                   weight_decay=args.weight_decay)
+            print("=> no checkpoint found at '{}'".format(args.resume))
+
+    scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones,
+                            gamma=0.1)
+
+    for epoch in range(args.start_epoch, args.epochs):
+        # train for one epoch
+        train(train_loader, model, criterion, optimizer, epoch, normalizer)
+
+        # evaluate on validation set
+        mae_error = validate(val_loader, model, criterion, normalizer)
+
+        if mae_error != mae_error:
+            print('Exit due to NaN')
+            sys.exit(1)
+
+        scheduler.step()
+
+        # remember the best mae_eror and save checkpoint
+        if args.task == 'regression':
+            is_best = mae_error < best_mae_error
+            best_mae_error = min(mae_error, best_mae_error)
         else:
-            raise NameError('Only SGD or Adam is allowed as --optim')
+            is_best = mae_error > best_mae_error
+            best_mae_error = max(mae_error, best_mae_error)
+        save_checkpoint({
+            'epoch': epoch + 1,
+            'state_dict': model.state_dict(),
+            'best_mae_error': best_mae_error,
+            'optimizer': optimizer.state_dict(),
+            'normalizer': normalizer.state_dict(),
+            'args': vars(args)
+        }, is_best)
 
-        # optionally resume from a checkpoint
-        if args.resume:
-            if os.path.isfile(args.resume):
-                print("=> loading checkpoint '{}'".format(args.resume))
-                checkpoint = torch.load(args.resume)
-                args.start_epoch = checkpoint['epoch']
-                best_mae_error = checkpoint['best_mae_error']
-                model.load_state_dict(checkpoint['state_dict'])
-                optimizer.load_state_dict(checkpoint['optimizer'])
-                normalizer.load_state_dict(checkpoint['normalizer'])
-                print("=> loaded checkpoint '{}' (epoch {})"
-                      .format(args.resume, checkpoint['epoch']))
-            else:
-                print("=> no checkpoint found at '{}'".format(args.resume))
-
-        scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones,
-                                gamma=0.1)
-
-        train_loader = train_loaders[fold]
-        val_loader = val_loaders[fold]
-
-        train_losses = []
-        val_losses = []
-
-        for epoch in range(args.start_epoch, args.epochs):
-            # train for one epoch
-            train_loss = train(train_loader, model, criterion, optimizer, epoch, normalizer)
-            train_losses.append(train_loss)
-
-            # evaluate on validation set
-            mae_error, val_loss = validate(val_loader, model, criterion, normalizer)
-            val_losses.append(val_loss)
-
-            if mae_error != mae_error:
-                print('Exit due to NaN')
-                sys.exit(1)
-
-            scheduler.step()
-
-            # remember the best mae_eror and save checkpoint
-            if args.task == 'regression':
-                is_best = mae_error < best_mae_error
-                best_mae_error = min(mae_error, best_mae_error)
-            else:
-                is_best = mae_error > best_mae_error
-                best_mae_error = max(mae_error, best_mae_error)
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
-                'best_mae_error': best_mae_error,
-                'optimizer': optimizer.state_dict(),
-                'normalizer': normalizer.state_dict(),
-                'args': vars(args)
-            }, is_best)
-
-        all_train_losses.append(train_losses)
-        all_val_losses.append(val_losses)
-
-        # test best model
-        print('---------Evaluate Model on Test Set---------------')
-        best_checkpoint = torch.load('model_best.pth.tar')
-        model.load_state_dict(best_checkpoint['state_dict'])
-        test_mae, test_r2 = validate(test_loader, model, criterion, normalizer, test=True)
-        test_maes.append(test_mae)
-        test_r2s.append(test_r2)
-
-    # 增加loss曲线绘制
-    for i in range(5):
-        plt.plot(all_train_losses[i], label='Train Fold {}'.format(i+1))
-        # plt.plot(all_val_losses[i], label='Val Fold {}'.format(i+1))
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Loss Curves')
-    plt.legend()
-    plt.show()
-    print('test_mae:', test_maes)
-    print('test_r2:', test_r2s)
+    # test best model
+    print('---------Evaluate Model on Test Set---------------')
+    best_checkpoint = torch.load('model_best.pth.tar')
+    model.load_state_dict(best_checkpoint['state_dict'])
+    validate(test_loader, model, criterion, normalizer, test=True)
+    
+    return best_mae_error
 
 
 def train(train_loader, model, criterion, optimizer, epoch, normalizer):
@@ -297,8 +307,6 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                     epoch, i, len(train_loader), batch_time=batch_time,
                     data_time=data_time, loss=losses, mae_errors=mae_errors)
                 )
-
-                return losses.avg
             else:
                 print('Epoch: [{0}][{1}/{2}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -314,8 +322,6 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                     prec=precisions, recall=recalls, f1=fscores,
                     auc=auc_scores)
                 )
-
-                return losses.avg
 
 
 def validate(val_loader, model, criterion, normalizer, test=False):
@@ -432,30 +438,11 @@ def validate(val_loader, model, criterion, normalizer, test=False):
     if args.task == 'regression':
         print(' {star} MAE {mae_errors.avg:.3f}'.format(star=star_label,
                                                         mae_errors=mae_errors))
-        if test:
-            # 增加输出r2
-            r2 = r2_score(test_targets, test_preds)
-            print(' {star} R^2 {r2:.3f}'.format(star=star_label, r2=r2))
-
-            # 增加绘制预测值与真实值散点图以及r2、mae汇报
-            plt.figure()
-            plt.scatter(test_targets, test_preds, alpha=0.5)
-            plt.plot([min(test_targets), max(test_targets)], [min(test_targets), max(test_targets)], color='red', linestyle='--',
-                     label='Ideal line')
-            plt.xlabel('Actual Values')
-            plt.ylabel('Predicted Values')
-            plt.title('Actual vs Predicted Values')
-            plt.text(max(test_targets)-0.05, max(test_preds)-0.05, 'R² = {r2:.2f}\nMAE = {mae:.2f}'.format(r2=r2, mae=float(mae_errors.avg)), fontsize=12, va='top', ha='right')
-            plt.axis('equal')
-            plt.show()
-
-            return mae_errors.avg, r2
-        else:
-            return mae_errors.avg, losses.avg
+        return mae_errors.avg
     else:
         print(' {star} AUC {auc.avg:.3f}'.format(star=star_label,
                                                  auc=auc_scores))
-        return auc_scores.avg, losses.avg
+        return auc_scores.avg
 
 
 class Normalizer(object):
@@ -545,27 +532,12 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 
 if __name__ == '__main__':
-    main()
-    # parser = argparse.ArgumentParser(description='CGCNN')
-    # parser.add_argument('--task', choices=['regression', 'classification'], required=True)
-    # parser.add_argument('--data', type=str, required=True)
-    # # 添加其他参数
-    # # ...
-    #
-    # # 如果从命令行运行
-    # if len(sys.argv) > 1:
-    #     args = parser.parse_args()
-    # else:
-    #     # 直接在代码中设置参数
-    #     args = parser.parse_args([
-    #             '--task', 'regression',
-    #             '--data', 'data.json',
-    #             # 添加其他参数
-    #             # '--train-size', '1000',
-    #             # '--val-size', '200',
-    #             # '--test-size', '200',
-    #             # '--epochs', '30',
-    #             # '--lr', '0.01',
-    #         ])
-    #
-    # main(args)
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=100)
+
+    print('Best trial:')
+    trial = study.best_trial
+    print('  Value: {}'.format(trial.value))
+    print('  Params: ')
+    for key, value in trial.params.items():
+        print('    {}: {}'.format(key, value))
