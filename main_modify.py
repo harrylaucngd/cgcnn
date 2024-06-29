@@ -33,11 +33,11 @@ class Args:
         self.workers = 0
         self.epochs = 300
         self.start_epoch = 0
-        self.batch_size = 512
-        self.lr = 0.0010098097217444582
+        self.batch_size = 256
+        self.lr = 0.0009912138170019237
         self.lr_milestones = [100]
-        self.momentum = 0.6907078649506996
-        self.weight_decay = 0.00012726161062048998
+        self.momentum = 0.7518702609715596
+        self.weight_decay = 1.0319272693079022e-05
         self.print_freq = 100
         self.resume = ''
         self.train_ratio = 0.8
@@ -213,7 +213,7 @@ def main():
     plt.ylabel('Loss')
     plt.title('Loss Curves')
     plt.legend()
-    plt.show()
+    plt.savefig('5fold.png')
     print('test_mae:', test_maes)
     print('test_r2:', test_r2s)
 

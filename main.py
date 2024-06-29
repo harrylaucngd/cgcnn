@@ -5,6 +5,7 @@ import sys
 import time
 import warnings
 from random import sample
+import matplotlib.pyplot as plt
 
 import numpy as np
 import torch
@@ -87,9 +88,14 @@ if args.task == 'regression':
 else:
     best_mae_error = 0.
 
+train_losses = []
+val_losses = []
+train_mae_errors = []
+val_mae_errors = []
+
 
 def main():
-    global args, best_mae_error
+    global args, best_mae_error, train_losses, val_losses, train_mae_errors, val_mae_errors
 
     # load data
     dataset = CIFData(*args.data_options)
@@ -300,6 +306,8 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                     prec=precisions, recall=recalls, f1=fscores,
                     auc=auc_scores)
                 )
+    train_losses.append(losses.avg)
+    train_mae_errors.append(mae_errors.avg)
 
 
 def validate(val_loader, model, criterion, normalizer, test=False):
@@ -402,6 +410,9 @@ def validate(val_loader, model, criterion, normalizer, test=False):
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     accu=accuracies, prec=precisions, recall=recalls,
                     f1=fscores, auc=auc_scores))
+
+    val_losses.append(losses.avg)
+    val_mae_errors.append(mae_errors.avg)
 
     if test:
         star_label = '**'
@@ -509,5 +520,31 @@ def adjust_learning_rate(optimizer, epoch, k):
         param_group['lr'] = lr
 
 
+def plot_training_curve(train_losses, val_losses, train_mae_errors, val_mae_errors):
+    epochs = range(1, len(train_losses) + 1)
+
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, train_losses, label='Training loss')
+    plt.plot(epochs, val_losses[:-1], label='Validation loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training and validation loss')
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, train_mae_errors, label='Training MAE')
+    plt.plot(epochs, val_mae_errors[:-1], label='Validation MAE')
+    plt.xlabel('Epochs')
+    plt.ylabel('MAE')
+    plt.legend()
+    plt.title('Training and validation MAE')
+
+    plt.tight_layout()
+    plt.savefig('vanilla.png')
+
+
 if __name__ == '__main__':
     main()
+    plot_training_curve(train_losses, val_losses, train_mae_errors, val_mae_errors)

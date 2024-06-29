@@ -22,7 +22,7 @@ import optuna
 
 def objective(trial):
     # 设置需要优化的超参数
-    lr = trial.suggest_loguniform('lr', 1e-5, 1e-1)
+    lr = trial.suggest_loguniform('lr', 1e-5, 1e-3)
     batch_size = trial.suggest_categorical('batch_size', [128, 256, 512])
     momentum = trial.suggest_uniform('momentum', 0.5, 0.99)
     weight_decay = trial.suggest_loguniform('weight_decay', 1e-6, 1e-2)
@@ -533,7 +533,7 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 if __name__ == '__main__':
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=100)
+    study.optimize(objective, n_trials=200)
 
     print('Best trial:')
     trial = study.best_trial
