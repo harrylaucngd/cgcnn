@@ -11,23 +11,52 @@ from sklearn import metrics
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
-from cgcnn.data import CIFData
-from cgcnn.data import collate_pool
+from cgcnn.data_modify import CIFData
+from cgcnn.data_modify import collate_pool
 from cgcnn.model import CrystalGraphConvNet
 
-parser = argparse.ArgumentParser(description='Crystal gated neural networks')
-parser.add_argument('modelpath', help='path to the trained model.')
-parser.add_argument('cifpath', help='path to the directory of CIF files.')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
-                    metavar='N', help='mini-batch size (default: 256)')
-parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
-                    help='number of data loading workers (default: 0)')
-parser.add_argument('--disable-cuda', action='store_true',
-                    help='Disable CUDA')
-parser.add_argument('--print-freq', '-p', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
+# parser = argparse.ArgumentParser(description='Crystal gated neural networks')
+# parser.add_argument('modelpath', help='path to the trained model.')
+# parser.add_argument('cifpath', help='path to the directory of CIF files.')
+# parser.add_argument('-b', '--batch-size', default=256, type=int,
+#                     metavar='N', help='mini-batch size (default: 256)')
+# parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
+#                     help='number of data loading workers (default: 0)')
+# parser.add_argument('--disable-cuda', action='store_true',
+#                     help='Disable CUDA')
+# parser.add_argument('--print-freq', '-p', default=10, type=int,
+#                     metavar='N', help='print frequency (default: 10)')
+#
+# args = parser.parse_args(sys.argv[1:])
+# if os.path.isfile(args.modelpath):
+#     print("=> loading model params '{}'".format(args.modelpath))
+#     model_checkpoint = torch.load(args.modelpath,
+#                                   map_location=lambda storage, loc: storage)
+#     model_args = argparse.Namespace(**model_checkpoint['args'])
+#     print("=> loaded model params '{}'".format(args.modelpath))
+# else:
+#     print("=> no model params found at '{}'".format(args.modelpath))
+#
+# args.cuda = not args.disable_cuda and torch.cuda.is_available()
+#
+# if model_args.task == 'regression':
+#     best_mae_error = 1e10
+# else:
+#     best_mae_error = 0.
 
-args = parser.parse_args(sys.argv[1:])
+# 定义配置参数
+config = {
+    'modelpath': 'model_best.pth.tar',  # 替换为实际模型路径
+    'cifpath': 'DACs-data-predict',     # 替换为实际CIF文件路径
+    'batch_size': 256,
+    'workers': 0,
+    'disable_cuda': False,
+    'print_freq': 10
+}
+
+# 模拟 argparse.Namespace 对象
+args = argparse.Namespace(**config)
+
 if os.path.isfile(args.modelpath):
     print("=> loading model params '{}'".format(args.modelpath))
     model_checkpoint = torch.load(args.modelpath,
@@ -43,6 +72,13 @@ if model_args.task == 'regression':
     best_mae_error = 1e10
 else:
     best_mae_error = 0.
+
+# 打印配置参数
+print("Configuration:")
+for key, value in config.items():
+    print(f"{key}: {value}")
+
+print("CUDA Enabled: ", args.cuda)
 
 
 def main():
@@ -93,8 +129,8 @@ def main():
                                 map_location=lambda storage, loc: storage)
         model.load_state_dict(checkpoint['state_dict'])
         normalizer.load_state_dict(checkpoint['normalizer'])
-        print("=> loaded model '{}' (epoch {}, validation {})"
-              .format(args.modelpath, checkpoint['epoch'],
+        print("=> loaded model '{}' (fold {}, epoch {}, validation {})"
+              .format(args.modelpath, checkpoint['fold'], checkpoint['epoch'],
                       checkpoint['best_mae_error']))
     else:
         print("=> no model found at '{}'".format(args.modelpath))
