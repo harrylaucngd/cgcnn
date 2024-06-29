@@ -16,11 +16,14 @@ from torch.optim.lr_scheduler import MultiStepLR
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold
 import matplotlib.pyplot as plt
+from matplotlib.pyplot import MultipleLocator
+from early_stopping import EarlyStopping
 
 from cgcnn.data_modify import CIFData
 from cgcnn.data_modify import collate_pool, get_train_val_test_loader
 from cgcnn.model import CrystalGraphConvNet
 
+import predict
 # 修改了本来的命令行输入
 # 按照要求，是将原始数据集8:2分成训练集与测试集，再在训练集里进行五折交叉验证
 
@@ -31,13 +34,13 @@ class Args:
         self.task = 'regression'
         self.disable_cuda = False
         self.workers = 0
-        self.epochs = 300
+        self.epochs = 500
         self.start_epoch = 0
-        self.batch_size = 256
-        self.lr = 0.0009912138170019237
+        self.batch_size = 256  # 512
+        self.lr = 0.000991  # 0.0007  # 0.0010098097217444582
         self.lr_milestones = [100]
-        self.momentum = 0.7518702609715596
-        self.weight_decay = 1.0319272693079022e-05
+        self.momentum = 0.7519  # 0.6907078649506996
+        self.weight_decay = 1.032e-5  # 0.08  # 0.00012726161062048998
         self.print_freq = 100
         self.resume = ''
         self.train_ratio = 0.8
@@ -47,7 +50,7 @@ class Args:
         self.test_ratio = 0.2
         self.test_size = None
         self.optim = 'SGD'
-        self.atom_fea_len = 64
+        self.atom_fea_len = 128
         self.h_fea_len = 128
         self.n_conv = 4
         self.n_h = 1   # 池化后的隐藏层数量
@@ -63,9 +66,13 @@ if args.task == 'regression':
 else:
     best_mae_error = 0.
 
+# 修改到你的本地目录
+figure_save_path = 'C:\\Users\\86159\\Desktop\\智能化工大作业'
+save_name = 'early_17'
+
 
 def main():
-    global args, best_mae_error
+    global args, best_mae_error, figure_save_path, save_name
 
     # load data
     dataset = CIFData(*args.data_options)
@@ -103,11 +110,15 @@ def main():
 
     all_train_losses = []
     all_val_losses = []
+    train_maes = []
+    train_r2s = []
     test_maes = []
     test_r2s = []
 
+    cv_num = 5
+
     # 增加5折交叉验证，准确性存疑，具体交叉验证的数据划分在data.py中存在改动
-    for fold in range(5):
+    for fold in range(cv_num):
         print('-------------Fold {}---------------'.format(fold+1))
 
         # build model
@@ -155,17 +166,25 @@ def main():
                 print("=> no checkpoint found at '{}'".format(args.resume))
 
         scheduler = MultiStepLR(optimizer, milestones=args.lr_milestones,
-                                gamma=0.1)
+                                gamma=0.5)
 
         train_loader = train_loaders[fold]
         val_loader = val_loaders[fold]
 
         train_losses = []
         val_losses = []
+        train_target = []
+        train_output = []
+
+        best_mae_for_fold = 1e10
+
+        # 加入早停
+        patience = 30
+        early_stopping = EarlyStopping(patience, verbose=True, delta=0)
 
         for epoch in range(args.start_epoch, args.epochs):
             # train for one epoch
-            train_loss = train(train_loader, model, criterion, optimizer, epoch, normalizer)
+            train_loss, train_target, train_output, train_mae = train(train_loader, model, criterion, optimizer, epoch, normalizer)
             train_losses.append(train_loss)
 
             # evaluate on validation set
@@ -182,10 +201,15 @@ def main():
             if args.task == 'regression':
                 is_best = mae_error < best_mae_error
                 best_mae_error = min(mae_error, best_mae_error)
+                is_best_for_fold = mae_error < best_mae_for_fold
+                best_mae_for_fold = min(mae_error, best_mae_for_fold)
             else:
                 is_best = mae_error > best_mae_error
                 best_mae_error = max(mae_error, best_mae_error)
+                is_best_for_fold = mae_error < best_mae_for_fold
+                best_mae_for_fold = min(mae_error, best_mae_for_fold)
             save_checkpoint({
+                'fold': fold + 1,
                 'epoch': epoch + 1,
                 'state_dict': model.state_dict(),
                 'best_mae_error': best_mae_error,
@@ -194,31 +218,123 @@ def main():
                 'args': vars(args)
             }, is_best)
 
+            save_checkpoint_for_fold({
+                'fold': fold + 1,
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_mae_error': best_mae_error,
+                'optimizer': optimizer.state_dict(),
+                'normalizer': normalizer.state_dict(),
+                'args': vars(args)
+            }, is_best_for_fold)
+
+            if epoch > 200:
+                eachepoch_val_loss = np.average(val_loss)
+                # 早停法
+                early_stopping(eachepoch_val_loss, {
+                    'fold': fold + 1,
+                    'epoch': epoch + 1,
+                    'state_dict': model.state_dict(),
+                    'best_mae_error': best_mae_error,
+                    'optimizer': optimizer.state_dict(),
+                    'normalizer': normalizer.state_dict(),
+                    'args': vars(args)
+                }, fold+1)
+                # 若满足 early stopping 要求
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
+
         all_train_losses.append(train_losses)
         all_val_losses.append(val_losses)
+        # 训练集评估
+        print('---------Evaluate Model on Train Set---------------')
+        r2_train = r2_score(train_target, train_output)
+        train_maes.append(float(train_mae.avg))
+        train_r2s.append(r2_train)
+        print(' ** Train MAE {mae:.3f}'.format(mae=float(train_mae.avg)))
+        print(' ** Train R^2 {r2:.3f}'.format(r2=r2_train))
 
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.plot((0, 1), (0, 1), linewidth=1, transform=ax.transAxes, ls='--', c='k', label="1:1 line", alpha=0.5)
+        ax.plot(train_target, train_output, 'o', c='b', markersize=3, alpha=0.5)
+        bbox = dict(boxstyle="round", fc='1', alpha=0.)
+        bbox = bbox
+        ax.set_xlabel('DFT Values')
+        ax.set_ylabel("Predicted values")
+        ax.set_title("DFT values vs Predicted Values in Train Set")
+        ax.tick_params(labelsize=7)
+        x_major_locator = MultipleLocator(0.5)
+        ax.xaxis.set_major_locator(x_major_locator)
+        y_major_locator = MultipleLocator(0.5)
+        ax.yaxis.set_major_locator(y_major_locator)
+        ax.set(xlim=(-3, 3), ylim=(-3, 3))
+        plt.text(-1.3, 2.8, 'R² = {r2:.2f}\nMAE = {mae:.2f}'.format(r2=r2_train, mae=float(train_mae.avg)), fontsize=12,
+                 va='top', ha='right')
+        plt.savefig(os.path.join(figure_save_path, 'train_{}_{}.png'.format(save_name, fold+1)))
+        plt.close()
+
+        # 测试集评估
         # test best model
         print('---------Evaluate Model on Test Set---------------')
-        best_checkpoint = torch.load('model_best.pth.tar')
+        best_checkpoint = torch.load('model_best_fold.pth.tar')
         model.load_state_dict(best_checkpoint['state_dict'])
-        test_mae, test_r2 = validate(test_loader, model, criterion, normalizer, test=True)
+        test_mae, test_r2, test_targets, test_preds = validate(test_loader, model, criterion, normalizer, test=True)
+        r2 = r2_score(test_targets, test_preds)
+        print(' ** R^2 {r2:.3f}'.format(r2=r2))
+
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.plot((0, 1), (0, 1), linewidth=1, transform=ax.transAxes, ls='--', c='k', label="1:1 line", alpha=0.5)
+        ax.plot(test_targets, test_preds, 'o', c='b', markersize=3, alpha=0.5)
+        bbox = dict(boxstyle="round", fc='1', alpha=0.)
+        bbox = bbox
+        ax.set_xlabel('DFT Values')
+        ax.set_ylabel("Predicted values")
+        ax.tick_params(labelsize=7)
+        ax.set_title("DFT values vs Predicted Values in Test Set")
+        x_major_locator = MultipleLocator(0.5)
+        ax.xaxis.set_major_locator(x_major_locator)
+        y_major_locator = MultipleLocator(0.5)
+        ax.yaxis.set_major_locator(y_major_locator)
+        ax.set(xlim=(-3, 3), ylim=(-3, 3))
+        plt.text(-1.3, 2.8, 'R² = {r2:.2f}\nMAE = {mae:.2f}'.format(r2=r2, mae=float(test_mae)), fontsize=12,
+                 va='top', ha='right')
+        plt.savefig(os.path.join(figure_save_path, 'test_{}_{}.png'.format(save_name, fold + 1)))
+        plt.close()
         test_maes.append(test_mae)
         test_r2s.append(test_r2)
 
     # 增加loss曲线绘制
-    for i in range(5):
+    for i in range(cv_num):
         plt.plot(all_train_losses[i], label='Train Fold {}'.format(i+1))
-        # plt.plot(all_val_losses[i], label='Val Fold {}'.format(i+1))
     plt.xlabel('Epochs')
-    plt.ylabel('Loss')
+    plt.ylabel('Train Loss')
     plt.title('Loss Curves')
     plt.legend()
-    plt.savefig('5fold.png')
-    print('test_mae:', test_maes)
-    print('test_r2:', test_r2s)
+    plt.savefig(os.path.join(figure_save_path, 'train_loss_{}.png'.format(save_name)))
+    plt.close()
+
+    for i in range(cv_num):
+        plt.plot(all_val_losses[i], label='Val Fold {}'.format(i+1))
+    plt.xlabel('Epochs')
+    plt.ylabel('Val Loss')
+    plt.title('Loss Curves')
+    plt.legend()
+    plt.savefig(os.path.join(figure_save_path, 'Val_loss_{}.png'.format(save_name)))
+    plt.close()
+
+    print('---------5-fold Cross-Validation Results---------------')
+    print('mean_train_mae:', np.array(train_maes).mean())
+    print('mean_train_r2:', np.array(train_r2s).mean())
+    print('mean_test_mae:', np.array(test_maes).mean())
+    print('mean_test_r2:', np.array(test_r2s).mean())
+
+    # 预测
+    # predict.main()
 
 
 def train(train_loader, model, criterion, optimizer, epoch, normalizer):
+    global figure_save_path, save_name
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -298,7 +414,7 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                     data_time=data_time, loss=losses, mae_errors=mae_errors)
                 )
 
-                return losses.avg
+                return losses.avg, target.view(-1).tolist(), normalizer.denorm(output.data.cpu()).view(-1).tolist(), mae_errors
             else:
                 print('Epoch: [{0}][{1}/{2}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -315,10 +431,11 @@ def train(train_loader, model, criterion, optimizer, epoch, normalizer):
                     auc=auc_scores)
                 )
 
-                return losses.avg
+                return losses.avg, target.view(-1).tolist(), normalizer.denorm(output.data.cpu()).view(-1).tolist(), mae_errors
 
 
 def validate(val_loader, model, criterion, normalizer, test=False):
+    global figure_save_path, save_name
     batch_time = AverageMeter()
     losses = AverageMeter()
     if args.task == 'regression':
@@ -435,21 +552,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
         if test:
             # 增加输出r2
             r2 = r2_score(test_targets, test_preds)
-            print(' {star} R^2 {r2:.3f}'.format(star=star_label, r2=r2))
-
-            # 增加绘制预测值与真实值散点图以及r2、mae汇报
-            plt.figure()
-            plt.scatter(test_targets, test_preds, alpha=0.5)
-            plt.plot([min(test_targets), max(test_targets)], [min(test_targets), max(test_targets)], color='red', linestyle='--',
-                     label='Ideal line')
-            plt.xlabel('Actual Values')
-            plt.ylabel('Predicted Values')
-            plt.title('Actual vs Predicted Values')
-            plt.text(max(test_targets)-0.05, max(test_preds)-0.05, 'R² = {r2:.2f}\nMAE = {mae:.2f}'.format(r2=r2, mae=float(mae_errors.avg)), fontsize=12, va='top', ha='right')
-            plt.axis('equal')
-            plt.show()
-
-            return mae_errors.avg, r2
+            return mae_errors.avg, r2, test_targets, test_preds
         else:
             return mae_errors.avg, losses.avg
     else:
@@ -536,6 +639,12 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         shutil.copyfile(filename, 'model_best.pth.tar')
 
 
+def save_checkpoint_for_fold(state, is_best, filename='checkpoint_fold.pth.tar'):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, 'model_best_fold.pth.tar')
+
+
 def adjust_learning_rate(optimizer, epoch, k):
     """Sets the learning rate to the initial LR decayed by 10 every k epochs"""
     assert type(k) is int
@@ -546,26 +655,3 @@ def adjust_learning_rate(optimizer, epoch, k):
 
 if __name__ == '__main__':
     main()
-    # parser = argparse.ArgumentParser(description='CGCNN')
-    # parser.add_argument('--task', choices=['regression', 'classification'], required=True)
-    # parser.add_argument('--data', type=str, required=True)
-    # # 添加其他参数
-    # # ...
-    #
-    # # 如果从命令行运行
-    # if len(sys.argv) > 1:
-    #     args = parser.parse_args()
-    # else:
-    #     # 直接在代码中设置参数
-    #     args = parser.parse_args([
-    #             '--task', 'regression',
-    #             '--data', 'data.json',
-    #             # 添加其他参数
-    #             # '--train-size', '1000',
-    #             # '--val-size', '200',
-    #             # '--test-size', '200',
-    #             # '--epochs', '30',
-    #             # '--lr', '0.01',
-    #         ])
-    #
-    # main(args)
